@@ -6,6 +6,10 @@ desktop.ini
 # 依赖（本项目为零依赖静态站点，此目录不应出现）
 node_modules/
 
+# Python 缓存
+__pycache__/
+*.pyc
+
 # 本地验证与调试产物
 *.log
 *.out
