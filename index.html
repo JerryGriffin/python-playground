@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Python 练习场 · 写代码，点运行，看结果</title>
+<meta name="description" content="一个极简的在线 Python 编辑器：左边写代码，右边看结果，代码在你的浏览器里运行。">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23ffd43b'/%3E%3Ctext x='32' y='44' font-family='Segoe UI,Arial' font-size='31' font-weight='700' text-anchor='middle' fill='%234a3705'%3EPy%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">Py</div>
+      <h1>Python 练习场</h1>
+    </div>
+
+    <div class="status">
+      <span class="dot" id="statusDot"></span>
+      <span id="statusText">正在准备 Python …</span>
+    </div>
+
+    <div class="actions">
+      <button class="btn" id="btnClear">清空结果</button>
+      <button class="btn" id="btnStop" disabled>停止</button>
+      <button class="btn primary" id="btnRun" disabled>运行</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+
+    <section class="pane">
+      <div class="pane-head">在这里写代码</div>
+      <div class="editor" id="editor"></div>
+      <div class="stdin">
+        <div class="stdin-head">程序用 <code>input()</code> 要输入时，在下面填（一行一个值，不填就留空）</div>
+        <textarea id="stdinBox" spellcheck="false" placeholder="例如：&#10;7&#10;小明"></textarea>
+      </div>
+    </section>
+
+    <section class="pane">
+      <div class="pane-head">运行结果</div>
+      <div class="console" id="console"></div>
+    </section>
+
+  </main>
+
+  <footer class="foot">
+    <span class="foot-note">代码在你的浏览器里运行，不会上传到任何服务器 · 也可以按 <kbd>Ctrl</kbd>+<kbd>Enter</kbd> 运行</span>
+    <span class="made-by" title="制作者">made by <b>Jerry_Griffin</b></span>
+  </footer>
+
+</div>
+
+<script src="editor.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
