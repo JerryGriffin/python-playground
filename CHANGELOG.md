@@ -12,6 +12,8 @@
 ### 变更
 
 - 仓库地址确认为 `JerryGriffin/python-playground`（public），标签 `v2.0.2`，Pages 地址 `https://jerrygriffin.github.io/python-playground/`。
+- 新增根目录 `.nojekyll` 空文件：让 GitHub Pages 完全跳过 Jekyll 处理，按纯静态方式原样发布（与本项目「无构建步骤」的实际形态一致）。加之前 Pages 构建报 `Page build failed`，加之后首次触发即 `built`。
+  - 曾尝试改用 GitHub Actions 部署（`.github/workflows/pages.yml`），但设备码令牌没有 `workflow` scope，GitHub 会拒绝接受推送工作流文件的提交（`refusing to allow an OAuth App to create or update workflow ... without workflow scope`）。`.nojekyll` 方案不需要令牌额外权限，是这类纯静态站点的正确选择。
 
 ## [2.0.2] - 2026-10-06
 
