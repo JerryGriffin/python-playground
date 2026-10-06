@@ -2,6 +2,17 @@
 
 本文件记录 Python 在线测试台的功能性改动。版本号语义：主版本表示运行模型或交互范式的变化，次版本表示新增能力，修订号表示修复与体验优化。
 
+## [2.0.3] - 2026-10-06
+
+### 修复
+
+- **上传脚本在第 4 阶段必然失败（HTTP 401 Bad credentials）**：`do_auth()` 的返回值顺序是 `(账号, 令牌)`，而 `main()` 按 `(令牌, 账号)` 解包，两个值被颠倒赋值。结果是——第 3 阶段「认证成功」显示正常（校验发生在函数内部，用的是正确令牌），但第 4 阶段建仓时把**用户名当成令牌**发给了 GitHub，于是报 401。这个缺陷 100% 复现，与网络、令牌有效期、权限范围都无关。修复后首次运行即完成建仓、推送、打标签、设置 Topics 与开启 Pages。
+  - 顺带修正一处同类隐患：`python` 里写 `/tmp/xxx.json` 这类 Git Bash 路径会 `FileNotFound`（Windows Python 不认 MSYS 路径），排查时需用 `cygpath -w` 换算。
+
+### 变更
+
+- 仓库地址确认为 `JerryGriffin/python-playground`（public），标签 `v2.0.2`，Pages 地址 `https://jerrygriffin.github.io/python-playground/`。
+
 ## [2.0.2] - 2026-10-06
 
 ### 新增
