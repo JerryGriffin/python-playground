@@ -44,10 +44,22 @@ styles.css          全部样式（含编辑器高亮层与 textarea 的对齐�
 editor.js           零依赖代码编辑器：高亮层 + 透明输入层叠加
 app.js              主线程逻辑：状态机、结果区渲染、与 worker 通信
 runner.worker.js    Pyodide 运行时（Web Worker 中执行，主线程不阻塞）
+upload.py           一键上传到 GitHub（建仓库 / 推送 / 打标签 / 开 Pages）
+test-upload.sh      upload.py 的回归测试（13 项，无需凭据）
 CHANGELOG.md        更新日志
+UPLOAD-TO-GITHUB.md 上传说明与失败排查
 ```
 
 职责划分：`app.js` 只管界面，一行 Python 都不碰；`runner.worker.js` 只管执行，一行 DOM 都不碰。两者通过 `postMessage` 通信，消息格式统一为 `{ type, payload }`。
+
+## 上传到 GitHub
+
+```bash
+python upload.py --dry-run        # 先看看会做什么
+python upload.py                  # 真正执行（会引导你完成认证）
+```
+
+脚本零第三方依赖，一条命令做完「环境体检 → 准备仓库 → 认证 → 建仓库 → 推送 → 打标签 → 设置 Topics / 开启 Pages → 输出地址」，详见 [UPLOAD-TO-GITHUB.md](UPLOAD-TO-GITHUB.md)。
 
 ## 工作原理
 
