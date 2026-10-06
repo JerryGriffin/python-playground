@@ -749,7 +749,8 @@ def main():
             ok("远端：%s" % remote)
             step(4, 8, "跳过（沿用已有远端）")
         else:
-            token, login_raw = do_auth(args)
+            # do_auth 返回的是 (login, token)，顺序别弄反
+            login_raw, token = do_auth(args)
             login = args.user or login_raw
             if login != login_raw and login_raw not in ("dry-run-user",):
                 info("按 --user 使用账号：%s" % login)
