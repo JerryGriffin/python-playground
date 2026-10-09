@@ -2,6 +2,16 @@
    runner.worker.js — Pyodide 运行时（在 Web Worker 中执行，主线程不阻塞）
    职责：加载 CPython(WASM)、执行用户代码、接管 stdout/stderr/stdin、
         按需加载预编译包、安装 PyPI 包、回传 matplotlib 图形。
+
+   input() 的工作方式（动态交互）：
+     Python 侧的 sys.stdin 被换成 _PyIDEStdin，它的 readline() 调用
+     JS 函数 _pyide_readline_js()。该函数发一个「同步 XHR」到本站的
+     __stdin__ 地址——同步 XHR 会把这个 Worker 线程就地冻住，
+     请求由 Service Worker 拦截并挂起，直到用户在页面结果区敲完一行
+     并回车，才把响应放回。于是「程序真的在等输入」，而不是预先填好
+     一串行让它按顺序取。主线程全程不受影响，死循环仍可「停止」。
+     若 Service Worker 不可用，同步 XHR 会拿到 404，此时按 EOF 处理
+     并回报界面，不会把 Worker 卡死。
    ========================================================================== */
 'use strict';
 
@@ -20,12 +30,17 @@ var PROBE_MS = 12000;      // 单源探测超时
 var LOAD_MS = 300000;      // 单源加载超时（慢速网络下完整发行版可能需数分钟）
 var CORE_FILES = ['pyodide.asm.wasm', 'python_stdlib.zip', 'pyodide.asm.js', 'pyodide-lock.json'];
 
+/* Service Worker 约定的输入通道 */
+var STDIN_PATH = '__stdin__';
+var STDIN_EOF_STATUS = 204;   // SW 用 204 表示「用户点了结束输入」
+
 var pyodide = null;
 var ready = false;
 var current = null;
 
-var stdinLines = [];
-var stdinCursor = 0;
+/* 每次运行重置，用来给输入请求编号；接上随机前缀避免与上一次运行的编号撞车 */
+var stdinSession = Math.random().toString(36).slice(2, 8);
+var stdinSeq = 0;
 
 function post(type, payload) {
   self.postMessage({ type: type, payload: payload });
@@ -91,54 +106,106 @@ function endOfStreams() {
   errDecoder = new TextDecoder('utf-8');
 }
 
+/* ------------------------------------------------------------- 标准输入 --
+   同步 XHR 会把本 Worker 线程就地冻住，这正是「程序停在那里等输入」的实现方式：
+   请求发往本站的 __stdin__，由 Service Worker 拦截并挂起，用户在结果区敲完
+   回车后 SW 才把响应放回，Worker 随之解冻继续执行。
+
+   必须用同步（xhr.open 第三个参数为 false）：异步请求不会阻断线程，
+   Python 的 input() 就无法真正等待。牺牲的是这个 Worker，主线程不受影响。 */
+
+function blockingReadline() {
+  var id = stdinSession + '-' + (++stdinSeq);
+  var url;
+  try {
+    url = new URL(STDIN_PATH + '?id=' + encodeURIComponent(id), self.location.href).href;
+  } catch (e) {
+    post('stdin-fail', '无法解析输入通道地址：' + ((e && e.message) || e));
+    return null;
+  }
+
+  // 先把缓冲里的内容冲出去。input("提示语") 会先打印不带换行的提示语，
+  // 若此时不冲，用户会只看到输入框、看不到提示语。
+  flushOut();
+  flushErr();
+  post('stdin-request', { id: id });
+
+  var xhr = new XMLHttpRequest();
+  try {
+    xhr.open('GET', url, false);   // false = 同步，就地阻断
+    xhr.send();
+  } catch (e) {
+    post('stdin-fail', '输入通道中断：' + ((e && e.message) || e));
+    return null;
+  }
+
+  if (xhr.status === STDIN_EOF_STATUS) return null;   // 用户点了「结束输入」
+  if (xhr.status !== 200) {
+    post('stdin-fail', '输入通道不可用（HTTP ' + xhr.status + '）。');
+    return null;
+  }
+  return xhr.responseText;
+}
+
 /* ------------------------------------------------------------- 初始化 -- */
 
 var BOOTSTRAP = [
-  'import sys, builtins, json',
-  '_pyide_lines = json.loads(_PYIDE_LINES_JSON)',
+  'import sys, builtins',
   '',
   'class _PyIDEStdin:',
-  '    """由页面「标准输入」面板供数的 stdin 替身。"""',
-  '    def __init__(self, lines):',
-  '        self._lines = list(lines)',
-  '        self._i = 0',
+  '    """把 stdin 换成「每次读取都真的等用户敲一行」的实现。"""',
+  '    encoding = "utf-8"',
+  '',
   '    def readline(self, *args):',
-  '        if self._i < len(self._lines):',
-  '            line = self._lines[self._i]',
-  '            self._i += 1',
-  '            _pyide_echo_js(str(line))',
-  '            return line + "\\n"',
-  '        return ""',
+  '        line = _pyide_readline_js()',
+  '        if line is None:',
+  '            return ""',
+  '        return line + "\\n"',
+  '',
   '    def read(self, size=-1):',
-  '        rest = self._lines[self._i:]',
-  '        self._i = len(self._lines)',
-  '        for line in rest:',
-  '            _pyide_echo_js(str(line))',
-  '        return "".join(l + "\\n" for l in rest)',
+  '        parts = []',
+  '        while True:',
+  '            line = self.readline()',
+  '            if line == "":',
+  '                break',
+  '            parts.append(line)',
+  '        return "".join(parts)',
+  '',
   '    def readlines(self, hint=-1):',
-  '        return self.read().splitlines(True)',
+  '        lines = []',
+  '        while True:',
+  '            line = self.readline()',
+  '            if line == "":',
+  '                break',
+  '            lines.append(line)',
+  '        return lines',
+  '',
   '    def __iter__(self):',
   '        return self',
+  '',
   '    def __next__(self):',
   '        line = self.readline()',
-  '        if not line:',
+  '        if line == "":',
   '            raise StopIteration',
   '        return line',
-  '    def isatty(self):',
-  '        return False',
   '',
-  'sys.stdin = _PyIDEStdin(_pyide_lines)',
+  '    def isatty(self):',
+  '        return True',
+  '',
+  '    def flush(self):',
+  '        pass',
+  '',
+  'sys.stdin = _PyIDEStdin()',
   '',
   'def _pyide_input(prompt=""):',
   '    if prompt:',
   '        print(prompt, end="", flush=True)',
   '    line = sys.stdin.readline()',
   '    if line == "":',
-  '        raise EOFError("标准输入已读完：请在左下「标准输入」面板补充内容后重试")',
-  '    return line.rstrip("\\n")',
+  '        raise EOFError("EOF when reading a line")',
+  '    return line.rstrip("\\r\\n")',
   '',
-  'builtins.input = _pyide_input',
-  'del _pyide_lines, json'
+  'builtins.input = _pyide_input'
 ].join('\n');
 
 async function boot() {
@@ -338,7 +405,7 @@ function configure() {
   pyodide.setStdout({ raw: pushOut });
   pyodide.setStderr({ raw: pushErr });
 
-  // 兜底：底层读取（如 sys.stdin.buffer）直接视为 EOF，避免阻塞
+  // 兜底：底层读取（如 os.read(0)）直接视为 EOF，避免任何形式的挂死
   try {
     pyodide.setStdin({ stdin: function () { return null; } });
   } catch (e) { /* 旧版本 API 无此形态，忽略 */ }
@@ -350,7 +417,8 @@ function configure() {
     "os.environ['PYTHONDONTWRITEBYTECODE'] = '1'"
   ].join('\n'));
 
-  pyodide.globals.set('_pyide_echo_js', function (text) { post('stdin', text); });
+  // 交给 Python 侧的 _PyIDEStdin.readline() 调用：每次调用都会阻断到用户回车
+  pyodide.globals.set('_pyide_readline_js', blockingReadline);
 }
 
 /* --------------------------------------------------------------- 执行 -- */
@@ -422,12 +490,11 @@ async function run(msg) {
   if (!ready) { post('fatal', '运行时尚未就绪，请稍候。'); return; }
 
   var code = msg.code || '';
-  stdinLines = msg.stdin || [];
-  stdinCursor = 0;
+  stdinSession = Math.random().toString(36).slice(2, 8);   // 换一批编号，避免与上次运行的请求混淆
+  stdinSeq = 0;
   outBytes.length = 0;
   errBytes.length = 0;
 
-  pyodide.globals.set('_PYIDE_LINES_JSON', JSON.stringify(stdinLines));
   pyodide.runPython(BOOTSTRAP);
 
   var started = (self.performance || Date).now();

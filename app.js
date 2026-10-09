@@ -3,6 +3,10 @@
    只做三件事：把代码交给 worker 运行、把结果打印到右侧、把运行环境的准备
    进度显示在顶栏。运行环境（Pyodide / CPython 3.11）由 runner.worker.js
    在后台加载，两者通过 postMessage 通信（消息格式 { type, payload }）。
+
+   输入是「动态」的：程序执行到 input() 时会就地停住，结果区出现一行输入框，
+   敲完回车程序才继续——像真实程序那样一问一答，而不是预先在下面填一串行。
+   这条通道由 Service Worker（stdin-sw.js）配合 Worker 内的同步 XHR 实现。
    ========================================================================== */
 (function () {
   'use strict';
@@ -14,12 +18,24 @@
     ''
   ].join('\n');
 
+  var EXAMPLE_INPUT = [
+    '# 程序跑到 input() 会停下来等你输入，敲完回车它就继续',
+    '',
+    'name = input("你叫什么名字？")',
+    'age = int(input("你几岁了？"))',
+    '',
+    'print("你好，" + name + "！")',
+    'print("明年你就 " + str(age + 1) + " 岁了。")',
+    ''
+  ].join('\n');
+
   var STORE_KEY = 'pyide.simple.code';
+  var SW_RELOAD_KEY = 'pyide.simple.swReload';
+  var PING_MS = 15000;    // 等待输入期间给 Service Worker 保活
 
   var el = {
     console: document.getElementById('console'),
     editorBox: document.getElementById('editor'),
-    stdinBox: document.getElementById('stdinBox'),
     statusDot: document.getElementById('statusDot'),
     statusText: document.getElementById('statusText'),
     btnRun: document.getElementById('btnRun'),
@@ -32,6 +48,8 @@
   var worker = null;
   var out = { stdout: null, stderr: null };   // 尚未结束的输出行，用于流式续写
   var sawOutput = false;                      // 本次运行是否产生过输出
+  var awaiting = null;                        // 当前正在等待输入的请求 { id, row }
+  var pingTimer = null;
 
   /* ------------------------------------------------------------ 编辑器 -- */
 
@@ -54,6 +72,7 @@
   }
 
   function clearConsole() {
+    closeInputRow();
     el.console.innerHTML = '';
     out.stdout = out.stderr = null;
   }
@@ -89,8 +108,11 @@
     scrollDown();
   }
 
-  /* input() 读走的一行回显出来，让初学者看清程序拿到了什么 */
-  function echoLine(text) {
+  /* 输入回显：让初学者看清程序到底拿到了什么。
+     同时把尚未结束的输出行收尾——否则程序继续打印时会接在提示语那一行的
+     后面，而回显行会留在下面，看起来就错位了。 */
+  function echoInput(text) {
+    out.stdout = out.stderr = null;
     var row = document.createElement('div');
     row.className = 'row stdin';
     row.textContent = '▸ ' + text;
@@ -106,6 +128,123 @@
     fig.appendChild(img);
     el.console.appendChild(fig);
     scrollDown();
+  }
+
+  /* -------------------------------------------------------- 输入通道 -- */
+
+  /* 结果区里的一行输入框：程序停在这里等，敲完回车它才继续。 */
+  function closeInputRow() {
+    if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+    if (!awaiting) return;
+    if (awaiting.row && awaiting.row.parentNode) awaiting.row.parentNode.removeChild(awaiting.row);
+    awaiting = null;
+  }
+
+  function openInputRow(id) {
+    if (awaiting && awaiting.id === id) return;   // Worker 与 Service Worker 都通知了，只开一次
+    closeInputRow();
+
+    var row = document.createElement('div');
+    row.className = 'row ask';
+
+    var mark = document.createElement('span');
+    mark.className = 'ask-mark';
+    mark.textContent = '>';
+    mark.setAttribute('aria-hidden', 'true');
+
+    var input = document.createElement('input');
+    input.className = 'ask-input';
+    input.type = 'text';
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    input.setAttribute('aria-label', '程序正在等待输入，请输入一行后回车');
+
+    var eofBtn = document.createElement('button');
+    eofBtn.className = 'ask-eof';
+    eofBtn.type = 'button';
+    eofBtn.textContent = '结束输入';
+
+    row.appendChild(mark);
+    row.appendChild(input);
+    row.appendChild(eofBtn);
+    el.console.appendChild(row);
+    scrollDown();
+
+    awaiting = { id: id, row: row, input: input };
+
+    function submit(text) {
+      if (!awaiting || awaiting.id !== id) return;
+      echoInput(text);
+      closeInputRow();
+      sendToStdin({ type: 'line', id: id, line: text });
+      setStatus('busy', '正在运行…');
+    }
+
+    function sendEof() {
+      if (!awaiting || awaiting.id !== id) return;
+      out.stdout = out.stderr = null;
+      note('已结束输入（程序读到的就是「输入结束」）。');
+      closeInputRow();
+      sendToStdin({ type: 'eof', id: id });
+      setStatus('busy', '正在运行…');
+    }
+
+    input.addEventListener('keydown', function (ev) {
+      if (ev.isComposing || ev.keyCode === 229) return;      // 输入法组字中，交给输入法
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        submit(input.value);
+      } else if (ev.ctrlKey && (ev.key === 'd' || ev.key === 'D')) {
+        ev.preventDefault();
+        sendEof();
+      }
+    });
+    eofBtn.addEventListener('click', function () { eofBtn.blur(); sendEof(); });
+    row.addEventListener('mousedown', function (ev) {
+      if (ev.target !== eofBtn && ev.target !== input) setTimeout(function () { input.focus(); }, 0);
+    });
+
+    input.focus();
+
+    // Service Worker 在等待期间可能被回收，定期发一条消息给它保活
+    pingTimer = setInterval(function () { sendToStdin({ type: 'ping' }); }, PING_MS);
+  }
+
+  function sendToStdin(msg) {
+    var c = navigator.serviceWorker && navigator.serviceWorker.controller;
+    if (c) c.postMessage(msg);
+  }
+
+  /* 注册输入通道并等它真正接管本页：只有被接管的页面（及其 Worker）发出的
+     同步 XHR 才会落到 Service Worker 手里，否则会打到网络拿到 404。 */
+  function ensureInputChannel() {
+    if (!('serviceWorker' in navigator) || !self.isSecureContext) return Promise.resolve(false);
+    if (navigator.serviceWorker.controller) return Promise.resolve(true);
+
+    return navigator.serviceWorker.register('stdin-sw.js', { scope: './' })
+      .then(function () { return navigator.serviceWorker.ready; })
+      .then(function () {
+        if (navigator.serviceWorker.controller) return true;
+        return new Promise(function (resolve) {
+          var settled = false;
+          var finish = function (v) { if (!settled) { settled = true; resolve(v); } };
+          navigator.serviceWorker.addEventListener('controllerchange', function () { finish(true); });
+          setTimeout(function () { finish(!!navigator.serviceWorker.controller); }, 4000);
+        });
+      })
+      .then(function (ok) {
+        if (ok || navigator.serviceWorker.controller) return true;
+        // 首次访问时页面可能还没被接管：刷新一次即可（用会话标记防止反复刷新）
+        var tried = false;
+        try { tried = sessionStorage.getItem(SW_RELOAD_KEY) === '1'; } catch (e) { /* 忽略 */ }
+        if (!tried) {
+          try { sessionStorage.setItem(SW_RELOAD_KEY, '1'); } catch (e) { /* 忽略 */ }
+          location.reload();
+          return new Promise(function () { /* 页面即将刷新，不再继续 */ });
+        }
+        return false;
+      })
+      .catch(function () { return false; });
   }
 
   /* -------------------------------------------------------- 状态与按钮 -- */
@@ -163,7 +302,19 @@
 
       case 'stdout': write('stdout', payload); break;
       case 'stderr': write('stderr', payload); break;
-      case 'stdin': echoLine(payload); break;
+
+      /* 程序停在这里等输入：开出一行输入框 */
+      case 'stdin-request':
+        openInputRow(payload && payload.id);
+        setStatus('busy', '程序在等你输入，敲完按回车');
+        break;
+
+      /* 输入通道没接上（例如 Service Worker 不可用）：说清原因，别静默 */
+      case 'stdin-fail':
+        closeInputRow();
+        note(String(payload));
+        break;
+
       case 'done': onDone(payload); break;
 
       case 'fatal':
@@ -184,6 +335,7 @@
     result = result || {};
     runtime.running = false;
     out.stdout = out.stderr = null;
+    closeInputRow();
     updateButtons();
 
     if (result.images && result.images.length) {
@@ -193,7 +345,7 @@
     if (!result.ok) {
       write('stderr', (result.error || '运行出错') + '\n');
       if (/EOFError/.test(result.error || '')) {
-        note('程序在等输入（input）。请在左边最下面的输入框里，每行填一个值，然后重新运行。');
+        note('程序在读输入时遇到了「输入结束」。想再输入一次，直接点「运行」重新开始即可。');
       }
       setStatus('ready', '运行出错，请看右边的红色提示');
       return;
@@ -208,14 +360,6 @@
   }
 
   /* ------------------------------------------------------------ 动作 -- */
-
-  function stdinLines() {
-    var raw = el.stdinBox.value.replace(/\r\n?/g, '\n');
-    if (!raw) return [];
-    var lines = raw.split('\n');
-    while (lines.length && lines[lines.length - 1] === '') lines.pop();
-    return lines;
-  }
 
   function run() {
     if (!runtime.ready || runtime.running) return;
@@ -235,7 +379,7 @@
     setStatus('busy', '正在运行…');
     updateButtons();
 
-    worker.postMessage({ type: 'run', code: code, stdin: stdinLines() });
+    worker.postMessage({ type: 'run', code: code });
   }
 
   /* 死循环等卡住的程序：终止 worker 并重建运行环境（资源已缓存，重建很快） */
@@ -243,6 +387,8 @@
     if (!runtime.running) return;
     runtime.running = false;
     runtime.ready = false;
+    closeInputRow();
+    sendToStdin({ type: 'cancel' });      // 让还挂着的输入请求就地释放
     note('已停止。');
     spawn();
   }
@@ -255,10 +401,28 @@
     el.btnClear.blur();
   });
 
+  /* 结果区标题栏上的示例按钮：放一段会用到 input() 的代码，方便立刻体验动态输入 */
+  var btnExample = document.getElementById('btnExample');
+  if (btnExample) {
+    btnExample.addEventListener('click', function () {
+      editor.setValue(EXAMPLE_INPUT);
+      btnExample.blur();
+      note('已放入示例代码。点右上角「运行」试试——程序会停下来等你输入。');
+    });
+  }
+
   /* ------------------------------------------------------------ 启动 -- */
 
   clearConsole();
   note('正在准备 Python 运行环境，第一次打开需要等一会儿…');
   updateButtons();
-  spawn();
+  setStatus('loading', '正在准备输入通道…');
+
+  ensureInputChannel().then(function (ok) {
+    if (!ok) {
+      note('提示：当前环境无法启用交互式输入（Service Worker 不可用），'
+        + '程序里的 input() 会直接读到「输入结束」。');
+    }
+    spawn();
+  });
 })();

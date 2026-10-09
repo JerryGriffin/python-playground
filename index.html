@@ -32,29 +32,32 @@
   <main class="workspace">
 
     <section class="pane">
-      <div class="pane-head">在这里写代码</div>
-      <div class="editor" id="editor"></div>
-      <div class="stdin">
-        <div class="stdin-head">程序用 <code>input()</code> 要输入时，在下面填（一行一个值，不填就留空）</div>
-        <textarea id="stdinBox" spellcheck="false" placeholder="例如：&#10;7&#10;小明"></textarea>
+      <div class="pane-head">
+        <span>在这里写代码</span>
+        <span class="pane-hint">按 <kbd>Tab</kbd> 补全</span>
       </div>
+      <div class="editor" id="editor"></div>
     </section>
 
     <section class="pane">
-      <div class="pane-head">运行结果</div>
+      <div class="pane-head">
+        <span>运行结果</span>
+        <button class="mini" id="btnExample" type="button">放一段会等输入的示例</button>
+      </div>
       <div class="console" id="console"></div>
     </section>
 
   </main>
 
   <footer class="foot">
-    <span class="foot-note">代码在你的浏览器里运行，不会上传到任何服务器 · 也可以按 <kbd>Ctrl</kbd>+<kbd>Enter</kbd> 运行</span>
+    <span class="foot-note">代码在你的浏览器里运行，不会上传到任何服务器 · 按 <kbd>Ctrl</kbd>+<kbd>Enter</kbd> 运行 · 程序用 <code>input()</code> 要输入时，会在右边停下来等你敲字</span>
     <span class="made-by" title="制作者">made by <b>Jerry_Griffin</b></span>
   </footer>
 
 </div>
 
 <script src="editor.js"></script>
+<script src="complete.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

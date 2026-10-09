@@ -106,8 +106,10 @@
     var hl = container.querySelector('.ed-hl code');
     var pre = container.querySelector('.ed-hl');
     var gutterInner = container.querySelector('.ed-gutter-inner');
+    var scrollHost = container.querySelector('.ed-scroll');
 
     var state = { value: '' };
+    var completion = null;   // 补全层（complete.js 提供），未加载时为 null
 
     function renderHighlight() {
       var text = ta.value;
@@ -133,16 +135,40 @@
     function syncScroll() {
       pre.style.transform = 'translate(' + (-ta.scrollLeft) + 'px,' + (-ta.scrollTop) + 'px)';
       gutterInner.style.transform = 'translateY(' + (-ta.scrollTop) + 'px)';
+      if (completion) completion.reposition();
     }
 
-    ta.addEventListener('input', function () { renderHighlight(); syncScroll(); });
+    ta.addEventListener('input', function () {
+      renderHighlight();
+      syncScroll();
+      if (completion) completion.onInput();
+    });
     ta.addEventListener('scroll', syncScroll);
     ta.addEventListener('keydown', onKeyDown);
+
+    /* Tab 补全层：由 complete.js 提供。它不修改编辑器内部状态，
+       只通过下面这组回调改写文本，因此两边职责清晰、可独立演进。 */
+    if (global.PyComplete) {
+      completion = global.PyComplete.attach({
+        el: ta,
+        host: scrollHost,
+        setRangeText: function (text, start, end) {
+          ta.setRangeText(text, start, end, 'end');
+        },
+        onAfterInsert: function () {
+          renderHighlight();
+          syncScroll();
+        }
+      });
+    }
 
     /* ----------------------------------------------------------- 快捷键 -- */
 
     function onKeyDown(e) {
       var ctrl = e.ctrlKey || e.metaKey;
+
+      // 补全层优先处理：Tab 补全、候选导航、确认与关闭
+      if (completion && completion.handleKey(e)) return;
 
       if (ctrl && e.key === 'Enter') {
         e.preventDefault();
@@ -240,6 +266,7 @@
     /* ------------------------------------------------------------- API -- */
 
     function setValue(text) {
+      if (completion) completion.close();
       ta.value = text;
       renderHighlight();
       ta.scrollTop = 0;
@@ -273,5 +300,11 @@
     return api;
   }
 
-  global.PyEditor = { mount: mount, highlight: highlight };
+  /* words 暴露给 complete.js：补全需要与高亮共用同一份关键字/内置名单，
+     避免两处维护出现漂移。 */
+  global.PyEditor = {
+    mount: mount,
+    highlight: highlight,
+    words: { kw: KEYWORDS, bi: BUILTINS, sp: SPECIAL }
+  };
 })(window);
