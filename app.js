@@ -385,10 +385,13 @@
   /* 死循环等卡住的程序：终止 worker 并重建运行环境（资源已缓存，重建很快） */
   function stop() {
     if (!runtime.running) return;
+    var waiting = awaiting && awaiting.id;
     runtime.running = false;
     runtime.ready = false;
     closeInputRow();
-    sendToStdin({ type: 'cancel' });      // 让还挂着的输入请求就地释放
+    // 只放走本次运行挂着的那一个输入请求。不带 id 的全清会把别的标签页
+    // 正在等待的输入也放走，那边就会莫名读到「输入结束」。
+    if (waiting) sendToStdin({ type: 'cancel', id: waiting });
     note('已停止。');
     spawn();
   }
@@ -399,6 +402,12 @@
     clearConsole();
     note('结果已清空。');
     el.btnClear.blur();
+  });
+
+  /* 关页面 / 刷新时把挂着的那一个输入请求释放掉，
+     别让它一直悬在 Service Worker 上（悬着的请求会让 SW 迟迟无法被回收） */
+  window.addEventListener('pagehide', function () {
+    if (awaiting) sendToStdin({ type: 'cancel', id: awaiting.id });
   });
 
   /* 结果区标题栏上的示例按钮：放一段会用到 input() 的代码，方便立刻体验动态输入 */

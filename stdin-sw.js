@@ -13,6 +13,7 @@
      GET  __stdin__?id=<编号>
        200 + 正文  → 用户在结果区敲的一行（UTF-8）
        204         → 用户点了「结束输入」，Python 侧按 EOF 处理
+     cancel(id)   → 只放走该编号（不带 id 才是全清），避免跨标签页误伤
    编号带每次运行随机前缀，避免与上一次运行的请求混淆。
    ========================================================================== */
 'use strict';
@@ -49,6 +50,19 @@ function eofResponse() {
   return new Response(null, { status: EOF_STATUS });
 }
 
+/* 取消挂起的请求。带 id 时只放走那一个：
+   两个标签页同时开着时，一边点「停止」不能把另一边正在等的输入也放走。
+   不带 id 时才全清（清场用）。 */
+function cancel(id) {
+  var keys = Array.from(pending.keys()).filter(function (key) { return !id || key === id; });
+  keys.forEach(function (key) {
+    var resolve = pending.get(key);
+    pending.delete(key);
+    resolve(eofResponse());
+  });
+  if (!id) early.clear();
+}
+
 self.addEventListener('install', function () { self.skipWaiting(); });
 
 self.addEventListener('activate', function (e) { e.waitUntil(self.clients.claim()); });
@@ -57,12 +71,7 @@ self.addEventListener('message', function (e) {
   var d = e.data || {};
   if (d.type === 'line') respond(d.id, lineResponse(d.line));
   else if (d.type === 'eof') respond(d.id, eofResponse());
-  else if (d.type === 'cancel') {
-    // 「停止」后清场：把还挂着的请求一律按 EOF 放行，释放待处理表
-    pending.forEach(function (fn, id) { fn(eofResponse()); });
-    pending.clear();
-    early.clear();
-  }
+  else if (d.type === 'cancel') cancel(d.id);
   // d.type === 'ping'：保活。收到消息这个事实本身就会延长 SW 的生命周期。
 });
 
