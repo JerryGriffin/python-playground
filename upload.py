@@ -60,6 +60,14 @@ import time
 import urllib.error
 import urllib.request
 
+# Windows 控制台默认 GBK：打印 ✓ / emoji 会抛 UnicodeEncodeError 并中断整个上传流程。
+# 这里只放宽错误处理，不改编码（中文仍按控制台原编码输出）。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 # ------------------------------------------------------------------- 常量 --
 
 DEFAULT_REPO = "python-playground"
@@ -70,8 +78,8 @@ HOMEPAGE = "https://python-online-ide.app.host/"  # 占位，实际按域名规�
 LIVE_SITE = "https://python-online-ide.app.workbuddy.host/"
 TOPICS = ["python", "pyodide", "webassembly", "playground", "online-editor", "wasm"]
 REQUIRED_FILES = ["index.html", "styles.css", "editor.js", "app.js", "runner.worker.js"]
-AUTHOR_NAME = "Jerry_Griffin"
-AUTHOR_MAIL = "Jerry_Griffin@users.noreply.github.com"
+AUTHOR_NAME = "JerryGriffin"
+AUTHOR_MAIL = "68458066+JerryGriffin@users.noreply.github.com"
 
 API = "https://api.github.com"
 UA = "upload.py/1.0"
@@ -443,7 +451,8 @@ def do_auth(args):
             return verify_token(tok, "环境变量 " + key), tok
 
     # 3) gh 登录态
-    gh = find_gh()
+    # UPLOAD_SKIP_GH=1 供回归测试禁用本机 gh 登录态，确保「无凭据」分支可复现。
+    gh = None if os.environ.get("UPLOAD_SKIP_GH") else find_gh()
     if gh:
         code, tok = RUN([gh, "auth", "token"], quiet=True, check=False)
         if code == 0 and tok:
